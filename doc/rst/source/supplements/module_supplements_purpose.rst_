@@ -38,6 +38,8 @@
 
 .. |mgd77track_purpose| replace:: Plot track-lines of MGD77 cruises
 
+.. |nswing_purpose| replace:: A tsunami maker
+
 .. |gmtflexure_purpose| replace:: Compute flexural deformation of 2-D loads, forces, and bending moments
 
 .. |gmtgravmag3d_purpose| replace:: Compute the gravity/magnetic anomaly of a 3-D body by the method of Okabe
@@ -68,6 +70,12 @@
 
 .. |segy2grd_purpose| replace:: Converting SEGY data to a grid
 
+.. |gmtisf_purpose| replace:: Read seismicity data in the ISF formated file
+
+.. |grdshake_purpose| replace:: Compute Peak Ground Acceleration/Velocity and Intensity.
+
+.. |grdvs30_purpose| replace:: Compute VS30
+
 .. |coupe_purpose| replace:: Plot cross-sections of focal mechanisms
 
 .. |pscoupe_purpose| replace:: Plot cross-sections of focal mechanisms
@@ -83,8 +91,6 @@
 .. |sac_purpose| replace:: Plot seismograms in SAC format
 
 .. |pssac_purpose| replace:: Plot seismograms in SAC format
-
-.. |gmtisf_purpose| replace:: Read seismicity data in the ISF formatted file
 
 .. |backtracker_purpose| replace:: Generate forward and backward flowlines and hotspot tracks
 
@@ -106,17 +112,11 @@
 
 .. |rotsmoother_purpose| replace:: Get mean rotations and covariance matrices from set of finite rotations
 
-.. |nswing_purpose| replace:: A tsunami maker
-
 .. |grdbarb_purpose| replace:: Plot wind barb field from two component grids
 
 .. |barb_purpose| replace:: Plot wind barbs in 2-D and 3-D
 
 .. |psbarb_purpose| replace:: Plot wind barbs in 2-D and 3-D
-
-.. |grdshake_purpose| replace:: Compute Peak Ground Acceleration/Velocity and Intensity
-
-.. |grdvs30_purpose| replace:: Convert topographic slope to Vs30 velocities
 
 .. |x2sys_binlist_purpose| replace:: Create bin index listing from track data files
 

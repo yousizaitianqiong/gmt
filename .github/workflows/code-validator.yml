@@ -37,6 +37,8 @@ jobs:
               - 'src/**'
               - 'cmake/**'
               - '**/*.sh'
+              - 'doc/rst/source/module_core_purpose.rst_'
+              - 'doc/rst/source/supplements/module_supplements_purpose.rst_'
               - '.github/workflows/code-validator.yml'
 
   code-validator:
@@ -64,10 +66,18 @@ jobs:
 
       - name: Check module purposes
         run: |
-          cd src/
-          bash gmt_make_module_purpose.sh
-          if [[ $(git ls-files -m) ]]; then git --no-pager diff HEAD; exit 1; fi
-          cd ..
+          outputs=(
+            doc/rst/source/module_core_purpose.rst_
+            doc/rst/source/supplements/module_supplements_purpose.rst_
+          )
+          for output in "${outputs[@]}"; do
+            if [[ ! -f "$output" || -L "$output" || $(git ls-files -- "$output") != "$output" ]]; then
+              printf 'Expected a tracked regular file: %s\n' "$output" >&2
+              exit 1
+            fi
+          done
+          (cd src && bash gmt_make_module_purpose.sh)
+          git --no-pager diff --exit-code HEAD -- "${outputs[@]}"
 
       - name: Check GMT version year
         run: |
