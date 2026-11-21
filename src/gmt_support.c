@@ -2378,19 +2378,23 @@ GMT_LOCAL int gmtsupport_sort_label_struct (const void *p_1, const void *p_2) {
 }
 
 /*! . */
-GMT_LOCAL void gmtsupport_contlabel_fixpath (struct GMT_CTRL *GMT, double **xin, double **yin, double d[], uint64_t *n, struct GMT_CONTOUR *G) {
+GMT_LOCAL int gmtsupport_contlabel_fixpath (struct GMT_CTRL *GMT, double **xin, double **yin, double d[], uint64_t *n, struct GMT_CONTOUR *G) {
 	/* Sorts labels based on distance and inserts the label (x,y) point into the x,y path */
 	uint64_t i, j, k, np;
 	double *xp = NULL, *yp = NULL, *x = NULL, *y = NULL;
 
-	if (G->n_label == 0) return;	/* No labels, no need to insert points */
+	if (G->n_label == 0) return GMT_NOERROR;	/* No labels, no need to insert points */
 
 	/* Sort labels based on distance along contour if more than 1 */
 	if (G->n_label > 1) qsort (G->L, G->n_label, sizeof (struct GMT_LABEL *), gmtsupport_sort_label_struct);
 
+	if (*n > SIZE_MAX / sizeof (double) || G->n_label > SIZE_MAX / sizeof (double) - *n) return GMT_MEMORY_ERROR;
 	np = *n + G->n_label;	/* Length of extended path that includes inserted label coordinates */
-	if ((xp = gmt_M_memory (GMT, NULL, np, double)) == NULL) return;
-	if ((yp = gmt_M_memory (GMT, NULL, np, double)) == NULL) return;
+	if ((xp = gmt_M_memory (GMT, NULL, np, double)) == NULL) return GMT_MEMORY_ERROR;
+	if ((yp = gmt_M_memory (GMT, NULL, np, double)) == NULL) {
+		gmt_M_free (GMT, xp);
+		return GMT_MEMORY_ERROR;
+	}
 	x = *xin;	y = *yin;	/* Input coordinate arrays */
 
 	/* Make sure the xp, yp array contains the exact points at which labels should be placed */
@@ -2422,36 +2426,42 @@ GMT_LOCAL void gmtsupport_contlabel_fixpath (struct GMT_CTRL *GMT, double **xin,
 	*yin = yp;
 
 	*n = np;		/* and the new length */
+	return GMT_NOERROR;
 }
 
 /*! . */
-GMT_LOCAL void gmtsupport_contlabel_addpath (struct GMT_CTRL *GMT, double x[], double y[], uint64_t n, double zval, char *label, bool annot, struct GMT_CONTOUR *G) {
+GMT_LOCAL int gmtsupport_contlabel_addpath (struct GMT_CTRL *GMT, double x[], double y[], uint64_t n, double zval, char *label, bool annot, struct GMT_CONTOUR *G) {
 	uint64_t i;
 	double s = 0.0, c = 1.0, sign = 1.0;
 	struct GMT_CONTOUR_LINE *L = NULL;
 	/* Adds this segment to the list of contour lines */
 
 	if (G->n_alloc == 0 || G->n_segments == G->n_alloc) {
-		G->n_alloc = (G->n_alloc == 0) ? GMT_CHUNK : (G->n_alloc << 1);
-		if ((G->segment = gmt_M_memory (GMT, G->segment, G->n_alloc, struct GMT_CONTOUR_LINE *)) == NULL) return;
+		size_t new_n;
+		struct GMT_CONTOUR_LINE **tmp;
+		if (G->n_alloc > SIZE_MAX / (2 * sizeof (*tmp))) return GMT_MEMORY_ERROR;
+		new_n = (G->n_alloc == 0) ? GMT_CHUNK : (G->n_alloc << 1);
+		tmp = gmt_M_memory (GMT, G->segment, new_n, struct GMT_CONTOUR_LINE *);
+		if (!tmp) return GMT_MEMORY_ERROR;
+		G->segment = tmp;
+		G->n_alloc = new_n;
 	}
-	if ((G->segment[G->n_segments] = gmt_M_memory (GMT, NULL, 1, struct GMT_CONTOUR_LINE)) == NULL) return;
-	L = G->segment[G->n_segments];	/* Pointer to current segment */
+	if ((L = gmt_M_memory (GMT, NULL, 1, struct GMT_CONTOUR_LINE)) == NULL) return GMT_MEMORY_ERROR;
 	L->n = n;
-	if ((L->x = gmt_M_memory (GMT, NULL, L->n, double)) == NULL) return;
-	if ((L->y = gmt_M_memory (GMT, NULL, L->n, double)) == NULL) return;
+	if ((L->x = gmt_M_memory (GMT, NULL, L->n, double)) == NULL) goto fail;
+	if ((L->y = gmt_M_memory (GMT, NULL, L->n, double)) == NULL) goto fail;
 	gmt_M_memcpy (L->x, x, L->n, double);
 	gmt_M_memcpy (L->y, y, L->n, double);
 	gmt_M_memcpy (&L->pen, &G->line_pen, 1, struct GMT_PEN);
 	/* gmt_M_memcpy (L->rgb,&G->rgb, 4, double); */
 	gmt_M_memcpy (L->rgb, &G->font_label.fill.rgb, 4, double);
-	if ((L->name = gmt_M_memory (GMT, NULL, strlen (label)+1, char)) == NULL) return;
+	if ((L->name = gmt_M_memory (GMT, NULL, strlen (label)+1, char)) == NULL) goto fail;
 	strcpy (L->name, label);
 	L->annot = annot;
 	L->z = zval;
 	if (G->n_label) {	/* There are labels */
 		L->n_labels = G->n_label;
-		if ((L->L = gmt_M_memory (GMT, NULL, L->n_labels, struct GMT_LABEL)) == NULL) return;
+		if ((L->L = gmt_M_memory (GMT, NULL, L->n_labels, struct GMT_LABEL)) == NULL) goto fail;
 		for (i = 0; i < L->n_labels; i++) {
 			L->L[i].x = G->L[i]->x;
 			L->L[i].y = G->L[i]->y;
@@ -2466,12 +2476,23 @@ GMT_LOCAL void gmtsupport_contlabel_addpath (struct GMT_CTRL *GMT, double x[], d
 			L->L[i].angle = G->L[i]->angle;
 			L->L[i].dist = G->L[i]->dist;
 			L->L[i].node = G->L[i]->node;
-			L->L[i].label = gmt_M_memory (GMT, NULL, strlen (G->L[i]->label)+1, char);
+			if ((L->L[i].label = gmt_M_memory (GMT, NULL, strlen (G->L[i]->label)+1, char)) == NULL) goto fail;
 			gmt_M_memcpy (L->L[i].rgb, G->L[i]->rgb, 4, double);
 			strcpy (L->L[i].label, G->L[i]->label);
 		}
 	}
-	G->n_segments++;
+	G->segment[G->n_segments++] = L;
+	return GMT_NOERROR;
+fail:
+	if (L->L) {
+		for (i = 0; i < L->n_labels; i++) gmt_M_free (GMT, L->L[i].label);
+		gmt_M_free (GMT, L->L);
+	}
+	gmt_M_free (GMT, L->x);
+	gmt_M_free (GMT, L->y);
+	gmt_M_free (GMT, L->name);
+	gmt_M_free (GMT, L);
+	return GMT_MEMORY_ERROR;
 }
 
 /*! . */
@@ -3082,39 +3103,133 @@ GMT_LOCAL bool gmtsupport_label_is_OK (struct GMT_CTRL *GMT, struct GMT_LABEL *L
 }
 
 /*! . */
-GMT_LOCAL void gmtsupport_place_label (struct GMT_CTRL *GMT, struct GMT_LABEL *L, char *txt, struct GMT_CONTOUR *G, bool use_unit, size_t extra) {
+GMT_LOCAL int gmtsupport_place_label (struct GMT_CTRL *GMT, struct GMT_LABEL *L, char *txt, struct GMT_CONTOUR *G, bool use_unit, size_t extra) {
 	/* Allocates needed space and copies in the label */
 	size_t n, m = 0;
 
 	if (use_unit && G->unit[0])
 		m = strlen (G->unit);
 	n = strlen (txt) + 1 + m + extra;
-	if (G->prefix[0]) {	/* Must prepend the prefix string */
-		n += strlen (G->prefix) + 1;
-		L->label = gmt_M_memory (GMT, NULL, n, char);
+	if (G->prefix[0]) n += strlen (G->prefix) + 1;	/* Space for prefix */
+	if ((L->label = gmt_M_memory (GMT, NULL, n, char)) == NULL) return GMT_MEMORY_ERROR;
+	if (G->prefix[0])
 		sprintf (L->label, "%s%s", G->prefix, txt);
-	}
-	else {
-		L->label = gmt_M_memory (GMT, NULL, n, char);
+	else
 		strcpy (L->label, txt);
-	}
 	if (use_unit && G->unit[0]) {	/* Append a unit string */
 		strcat (L->label, G->unit);
 	}
 	gmt_M_memcpy (L->rgb, G->font_label.fill.rgb, 4, double);	/* Remember color in case it varies */
+	return GMT_NOERROR;
+}
+
+/* Grow before transferring ownership, retaining the old allocation on failure. */
+GMT_LOCAL int gmtsupport_store_label (struct GMT_CTRL *GMT, struct GMT_CONTOUR *G, struct GMT_LABEL *label, size_t *n_alloc) {
+	if (G->n_label == *n_alloc) {
+		size_t old_n = *n_alloc, new_n;
+		struct GMT_LABEL **tmp;
+		if (old_n > SIZE_MAX / (2 * sizeof (*tmp))) return GMT_MEMORY_ERROR;
+		new_n = old_n << 1;
+		tmp = gmt_M_memory (GMT, G->L, new_n, struct GMT_LABEL *);
+		if (!tmp) return GMT_MEMORY_ERROR;
+		G->L = tmp;
+		*n_alloc = new_n;
+		gmt_M_memset (&G->L[old_n], new_n - old_n, struct GMT_LABEL *);
+	}
+	G->L[G->n_label++] = label;
+	return GMT_NOERROR;
+}
+
+/* Cumulative distances along one straight projected segment.  The original
+ * vertices remain untouched, so label angles and curvature use the input path. */
+struct GMTSUPPORT_PROJECTED_DISTANCE {
+	uint64_t n, segment;
+	double *track, *value;
+};
+
+GMT_LOCAL void gmtsupport_free_projected_distance (struct GMT_CTRL *GMT, struct GMTSUPPORT_PROJECTED_DISTANCE *P) {
+	gmt_M_free (GMT, P->track);
+	gmt_M_free (GMT, P->value);
+	P->n = 0;
+}
+
+GMT_LOCAL int gmtsupport_sample_projected_distance (struct GMT_CTRL *GMT, struct GMT_CTRL *distance_GMT, double x0, double y0, double x1, double y1, bool track, bool value, struct GMTSUPPORT_PROJECTED_DISTANCE *P) {
+	uint64_t k;
+	double lon0, lat0, lon1, lat1, f, scale, count;
+
+	/* Bound the sampling interval in projected map coordinates, independently
+	 * of the physical plot size.  Retain a finite cap for out-of-map paths. */
+	scale = MAX (GMT->current.map.width, GMT->current.map.height);
+	count = (scale > 0.0) ? 4096.0 * hypot (x1 - x0, y1 - y0) / scale : 1.0;
+	P->n = (uint64_t)MAX (1.0, MIN (65536.0, ceil (count)));
+	if (track && (P->track = gmt_M_memory (GMT, NULL, P->n + 1, double)) == NULL) goto fail;
+	if (value && (P->value = gmt_M_memory (GMT, NULL, P->n + 1, double)) == NULL) goto fail;
+	if (track) P->track[0] = 0.0;
+	if (value) P->value[0] = 0.0;
+	gmt_xy_to_geo (GMT, &lon0, &lat0, x0, y0);
+	for (k = 1; k <= P->n; k++) {
+		f = (double)k / (double)P->n;
+		gmt_xy_to_geo (GMT, &lon1, &lat1, x0 + f * (x1 - x0), y0 + f * (y1 - y0));
+		if (track) P->track[k] = P->track[k-1] + gmtlib_distance_type (distance_GMT, lon0, lat0, lon1, lat1, GMT_CONT_DIST);
+		if (value) P->value[k] = P->value[k-1] + gmtlib_distance_type (distance_GMT, lon0, lat0, lon1, lat1, GMT_LABEL_DIST);
+		lon0 = lon1;	lat0 = lat1;
+	}
+	return GMT_NOERROR;
+fail:
+	gmtsupport_free_projected_distance (GMT, P);
+	return GMT_MEMORY_ERROR;
+}
+
+/* Keep only one segment's sampled distances resident at a time. */
+GMT_LOCAL int gmtsupport_projected_distance_for_segment (struct GMT_CTRL *GMT, struct GMT_CTRL *distance_GMT, double x[], double y[], uint64_t segment, bool track, bool value, struct GMTSUPPORT_PROJECTED_DISTANCE *P) {
+	int error;
+	if (P->n && P->segment == segment) return GMT_NOERROR;
+	gmtsupport_free_projected_distance (GMT, P);
+	error = gmtsupport_sample_projected_distance (GMT, distance_GMT, x[segment-1], y[segment-1], x[segment], y[segment], track, value, P);
+	if (error) return error;
+	P->segment = segment;
+	return GMT_NOERROR;
+}
+
+/* Invert cumulative distance on the sampled projected segment. */
+GMT_LOCAL double gmtsupport_projected_fraction (struct GMTSUPPORT_PROJECTED_DISTANCE *P, double distance) {
+	uint64_t lo = 0, hi = P->n, mid;
+	double delta;
+	if (distance <= 0.0 || P->n == 0) return 0.0;
+	if (distance >= P->track[P->n]) return 1.0;
+	while (hi - lo > 1) {
+		mid = lo + (hi - lo) / 2;
+		if (P->track[mid] < distance) lo = mid; else hi = mid;
+	}
+	delta = P->track[hi] - P->track[lo];
+	return ((double)lo + ((delta > 0.0) ? (distance - P->track[lo]) / delta : 0.0)) / (double)P->n;
+}
+
+/* Evaluate the separately configured label-distance unit at a plot fraction. */
+GMT_LOCAL double gmtsupport_projected_value (struct GMTSUPPORT_PROJECTED_DISTANCE *P, double fraction) {
+	uint64_t k;
+	double p;
+	if (P->n == 0) return 0.0;
+	p = MAX (0.0, MIN (1.0, fraction)) * (double)P->n;
+	k = (uint64_t)floor (p);
+	if (k >= P->n) return P->value[P->n];
+	return P->value[k] + (p - k) * (P->value[k+1] - P->value[k]);
 }
 
 /*! . */
-GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, double **yyy, uint64_t nn, double zval, char *label, char ctype, double cangle, bool closed, bool contour, struct GMT_CONTOUR *G) {
-	/* The xxx, yyy are expected to be projected x/y inches */
+GMT_LOCAL int gmtsupport_hold_contour_impl (struct GMT_CTRL *GMT, struct GMT_CTRL *distance_GMT, double **xxx, double **yyy, uint64_t nn, double zval, char *label, char ctype, double cangle, bool closed, bool contour, struct GMT_CONTOUR *G, bool projected) {
+	/* The xxx, yyy are projected x/y inches.  If projected is true, their
+	 * segments were constructed in that plane and do not wrap around a map. */
 	uint64_t i, j, start = 0;
 	size_t n_alloc = GMT_SMALL_CHUNK;
 	double *track_dist = NULL, *map_dist = NULL, *value_dist = NULL, *radii = NULL, *xx = NULL, *yy = NULL;
 	double dx, dy, width, f, this_dist, step, stept, this_value_dist, lon[2], lat[2];
+	bool projected_distance = projected && (G->dist_kind == 1 || G->label_type == GMT_LABEL_IS_MDIST);
+	struct GMTSUPPORT_PROJECTED_DISTANCE sampled = {0, 0, NULL, NULL};
 	struct GMT_LABEL *new_label = NULL;
 	char this_label[GMT_BUFSIZ] = {""};
 
-	if (nn < 2) return;
+	if (nn < 2) return GMT_NOERROR;
 
 	xx = *xxx;	yy = *yyy;
 	G->n_label = 0;
@@ -3126,10 +3241,10 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 		/* Calculate distance along contour and store in track_dist array */
 
 		if (G->dist_kind == 1) gmt_xy_to_geo (GMT, &lon[1], &lat[1], xx[0], yy[0]);
-		if ((map_dist = gmt_M_memory (GMT, NULL, nn, double)) == NULL) return;	/* Distances on map in inches */
-		if ((track_dist = gmt_M_memory (GMT, NULL, nn, double)) == NULL) return;	/* May be km ,degrees or whatever */
-		if ((value_dist = gmt_M_memory (GMT, NULL, nn, double)) == NULL) return;	/* May be km ,degrees or whatever */
-		if ((radii = gmt_M_memory (GMT, NULL, nn, double)) == NULL) return;	/* Radius of curvature, in inches */
+		if ((map_dist = gmt_M_memory (GMT, NULL, nn, double)) == NULL) goto fail;	/* Distances on map in inches */
+		if ((track_dist = gmt_M_memory (GMT, NULL, nn, double)) == NULL) goto fail;	/* May be km ,degrees or whatever */
+		if ((value_dist = gmt_M_memory (GMT, NULL, nn, double)) == NULL) goto fail;	/* May be km ,degrees or whatever */
+		if ((radii = gmt_M_memory (GMT, NULL, nn, double)) == NULL) goto fail;	/* Radius of curvature, in inches */
 
 		/* We will calculate the radii of curvature at all points.  By default we don't care and
 		 * will place labels at whatever distance we end up with.  However, if the user has asked
@@ -3148,7 +3263,7 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 		for (i = 1; i < nn; i++) {
 			/* Distance from xy */
 			dx = xx[i] - xx[i-1];
-			if (gmt_M_x_is_lon (GMT, GMT_IN) && GMT->current.map.is_world && fabs (dx) > (width = gmt_half_map_width (GMT, yy[i-1]))) {
+			if (!projected && gmt_M_x_is_lon (GMT, GMT_IN) && GMT->current.map.is_world && fabs (dx) > (width = gmt_half_map_width (GMT, yy[i-1]))) {
 				width *= 2.0;
 				dx = copysign (width - fabs (dx), -dx);
 				if (xx[i] < width)
@@ -3159,7 +3274,12 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 			dy = yy[i] - yy[i-1];
 			step = stept = hypot (dx, dy);
 			map_dist[i] = map_dist[i-1] + step;
-			if (G->dist_kind == 1 || G->label_type == GMT_LABEL_IS_MDIST) {
+			if (projected_distance && radii[i] >= G->min_radius) {
+				if (gmtsupport_projected_distance_for_segment (GMT, distance_GMT, xx, yy, i, G->dist_kind == 1, G->label_type == GMT_LABEL_IS_MDIST, &sampled)) goto fail;
+				if (G->dist_kind == 1) step = sampled.track[sampled.n];
+				if (G->label_type == GMT_LABEL_IS_MDIST) stept = sampled.value[sampled.n];
+			}
+			else if (!projected_distance && (G->dist_kind == 1 || G->label_type == GMT_LABEL_IS_MDIST)) {
 				lon[0] = lon[1];	lat[0] = lat[1];
 				gmt_xy_to_geo (GMT, &lon[1], &lat[1], xx[i], yy[i]);
 				if (G->dist_kind == 1) step = gmtlib_distance_type (GMT, lon[0], lat[0], lon[1], lat[1], GMT_CONT_DIST);
@@ -3175,7 +3295,7 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 		 * GMT_contlabel_draw has been called we will free up the memory as the labels are kept in
 		 * the linked list starting at G->anchor. */
 
-		if ((G->L = gmt_M_memory (GMT, NULL, n_alloc, struct GMT_LABEL *)) == NULL) return;
+		if ((G->L = gmt_M_memory (GMT, NULL, n_alloc, struct GMT_LABEL *)) == NULL) goto fail;
 
 		if (G->spacing) {	/* Place labels based on distance along contours */
 			double last_label_dist, dist_offset, dist;
@@ -3188,7 +3308,13 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 				dist = track_dist[i] + dist_offset - last_label_dist;
 				if (dist > G->label_dist_spacing) {	/* Time for label */
 					new_label = gmt_M_memory (GMT, NULL, 1, struct GMT_LABEL);
+					if (!new_label) goto fail;
+					if (projected_distance && gmtsupport_projected_distance_for_segment (GMT, distance_GMT, xx, yy, i, G->dist_kind == 1, G->label_type == GMT_LABEL_IS_MDIST, &sampled)) goto fail;
 					f = (dist - G->label_dist_spacing) / (track_dist[i] - track_dist[i-1]);
+					if (projected_distance && G->dist_kind == 1) {
+						double target = G->label_dist_spacing - dist_offset + last_label_dist - track_dist[i-1];
+						f = 1.0 - gmtsupport_projected_fraction (&sampled, target);
+					}
 					if (f < 0.5) {
 						new_label->x = xx[i] - f * (xx[i] - xx[i-1]);
 						new_label->y = yy[i] - f * (yy[i] - yy[i-1]);
@@ -3202,18 +3328,17 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 						new_label->dist = map_dist[i-1] + f * (map_dist[i] - map_dist[i-1]);
 						this_value_dist = value_dist[i-1] + f * (value_dist[i] - value_dist[i-1]);
 					}
+					if (projected_distance && G->label_type == GMT_LABEL_IS_MDIST) {
+						double fraction = (new_label->dist - map_dist[i-1]) / (map_dist[i] - map_dist[i-1]);
+						this_value_dist = value_dist[i-1] + gmtsupport_projected_value (&sampled, fraction);
+					}
 					this_dist = G->label_dist_spacing - dist_offset + last_label_dist;
 					if (gmtsupport_label_is_OK (GMT, new_label, this_label, label, this_dist, this_value_dist, 0, 0, G)) {
-						gmtsupport_place_label (GMT, new_label, this_label, G, !(G->label_type == GMT_LABEL_IS_NONE || G->label_type == GMT_LABEL_IS_PDIST), 0);
+						if (gmtsupport_place_label (GMT, new_label, this_label, G, !(G->label_type == GMT_LABEL_IS_NONE || G->label_type == GMT_LABEL_IS_PDIST), 0)) goto fail;
 						new_label->node = i - 1;
 						gmtsupport_contlabel_angle (GMT, xx, yy, i - 1, i, cangle, nn, contour, new_label, G);
-						G->L[G->n_label++] = new_label;
-						if (G->n_label == n_alloc) {
-							size_t old_n_alloc = n_alloc;
-							n_alloc <<= 1;
-							if ((G->L = gmt_M_memory (GMT, G->L, n_alloc, struct GMT_LABEL *)) == NULL) return;
-							gmt_M_memset (&(G->L[old_n_alloc]), n_alloc - old_n_alloc, struct GMT_LABEL *);	/* Set to NULL */
-						}
+						if (gmtsupport_store_label (GMT, G, new_label, &n_alloc)) goto fail;
+						new_label = NULL;
 					}
 					else	/* All in vain... */
 						gmt_M_free (GMT, new_label);
@@ -3235,6 +3360,7 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 			nc = (map_dist[nn-1] > G->min_dist) ? G->n_cont : 0;
 			for (i = j = 0; i < nc; i++) {
 				new_label = gmt_M_memory (GMT, NULL, 1, struct GMT_LABEL);
+				if (!new_label) goto fail;
 				if (G->number_placement && !closed) {
 					e_val = G->number_placement;
 					if (G->number_placement == -1 && G->n_cont == 1) {	/* Label justified with start of segment */
@@ -3269,10 +3395,19 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 					new_label->dist = (j == 0) ? 0.0 : map_dist[j] - f * (map_dist[j] - map_dist[j-1]);
 				}
 				if ((new_label->dist - last_dist) >= G->min_dist) {	/* OK to accept this label */
+					if (projected_distance && G->label_type == GMT_LABEL_IS_MDIST) {
+						if (j == 0 || map_dist[j] == map_dist[j-1]) this_value_dist = value_dist[j];
+						else if (value_dist[j] == value_dist[j-1]) this_value_dist = value_dist[j-1];
+						else {
+							double fraction = (new_label->dist - map_dist[j-1]) / (map_dist[j] - map_dist[j-1]);
+							if (gmtsupport_projected_distance_for_segment (GMT, distance_GMT, xx, yy, j, G->dist_kind == 1, true, &sampled)) goto fail;
+							this_value_dist = value_dist[j-1] + gmtsupport_projected_value (&sampled, fraction);
+						}
+					}
 					this_dist = dist;
 					if (gmtsupport_label_is_OK (GMT, new_label, this_label, label, this_dist, this_value_dist, 0, 0, G)) {
 						size_t extra = (G->crossect) ? strlen (G->crossect_tag[i]) + 1 : 0;	/* Need to increase allocated space */
-						gmtsupport_place_label (GMT, new_label, this_label, G, !(G->label_type == GMT_LABEL_IS_NONE), extra);
+						if (gmtsupport_place_label (GMT, new_label, this_label, G, !(G->label_type == GMT_LABEL_IS_NONE), extra)) goto fail;
 						if (G->crossect) {	/* Special crossection mode */
 							if (!strcmp (new_label->label, "N/A"))	/* Override the N/A lack of label identifier */
 								strcpy (new_label->label, G->crossect_tag[i]);
@@ -3282,14 +3417,9 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 						new_label->node = (j == 0) ? 0 : j - 1;
 						gmtsupport_contlabel_angle (GMT, xx, yy, new_label->node, j, cangle, nn, contour, new_label, G);
 						if (G->number_placement) new_label->end = e_val;
-						G->L[G->n_label++] = new_label;
-						if (G->n_label == n_alloc) {
-							size_t old_n_alloc = n_alloc;
-							n_alloc <<= 1;
-							if ((G->L = gmt_M_memory (GMT, G->L, n_alloc, struct GMT_LABEL *)) == NULL) return;
-							gmt_M_memset (&(G->L[old_n_alloc]), n_alloc - old_n_alloc, struct GMT_LABEL *);	/* Set to NULL */
-						}
+						if (gmtsupport_store_label (GMT, G, new_label, &n_alloc)) goto fail;
 						last_dist = new_label->dist;
+						new_label = NULL;
 					}
 					else /* Label had no text */
 						gmt_M_free (GMT, new_label);
@@ -3306,7 +3436,9 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 			for (line_no = 0; line_no < G->X->n_segments; line_no++) {	/* For each of the crossing lines */
 				S = G->X->table[0]->segment[line_no];	/* Current segment */
 				gmt_init_track (GMT, S->data[GMT_Y], S->n_rows, &(G->ylist_XP));
-				G->nx = (unsigned int)gmt_crossover (GMT, S->data[GMT_X], S->data[GMT_Y], NULL, G->ylist_XP, S->n_rows, xx, yy, NULL, G->ylist, nn, false, gmt_M_x_is_lon (GMT, GMT_IN), &G->XC);
+				/* Both tracks are projected inches when supplied by pscontour's
+				 * triangulation.  Geographic crossover would alter their x values. */
+				G->nx = (unsigned int)gmt_crossover (GMT, S->data[GMT_X], S->data[GMT_Y], NULL, G->ylist_XP, S->n_rows, xx, yy, NULL, G->ylist, nn, false, !projected && gmt_M_x_is_lon (GMT, GMT_IN), &G->XC);
 				gmt_M_free (GMT, G->ylist_XP);
 				if (G->nx == 0) continue;
 
@@ -3316,6 +3448,7 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 					left  = lrint (floor (G->XC.xnode[1][i]));
 					right = lrint (ceil  (G->XC.xnode[1][i]));
 					new_label = gmt_M_memory (GMT, NULL, 1, struct GMT_LABEL);
+					if (!new_label) goto fail;
 					new_label->x = G->XC.x[i];
 					new_label->y = G->XC.y[i];
 					new_label->node = left;
@@ -3332,16 +3465,18 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 						new_label->dist = map_dist[right] - f * (map_dist[right] - map_dist[left]);
 						this_value_dist = value_dist[right] - f * (value_dist[right] - value_dist[left]);
 					}
-					if (gmtsupport_label_is_OK (GMT, new_label, this_label, label, this_dist, this_value_dist, line_no, 0, G)) {
-						gmtsupport_place_label (GMT, new_label, this_label, G, !(G->label_type == GMT_LABEL_IS_NONE), 0);
-						gmtsupport_contlabel_angle (GMT, xx, yy, left, right, cangle, nn, contour, new_label, G);
-						G->L[G->n_label++] = new_label;
-						if (G->n_label == n_alloc) {
-							size_t old_n_alloc = n_alloc;
-							n_alloc <<= 1;
-							if ((G->L = gmt_M_memory (GMT, G->L, n_alloc, struct GMT_LABEL *)) == NULL) return;
-							gmt_M_memset (&(G->L[old_n_alloc]), n_alloc - old_n_alloc, struct GMT_LABEL *);	/* Set to NULL */
+					if (projected_distance && G->label_type == GMT_LABEL_IS_MDIST) {
+						if (left == right || value_dist[right] == value_dist[left]) this_value_dist = value_dist[left];
+						else {
+							if (gmtsupport_projected_distance_for_segment (GMT, distance_GMT, xx, yy, right, G->dist_kind == 1, true, &sampled)) goto fail;
+							this_value_dist = value_dist[left] + gmtsupport_projected_value (&sampled, G->XC.xnode[1][i] - left);
 						}
+					}
+					if (gmtsupport_label_is_OK (GMT, new_label, this_label, label, this_dist, this_value_dist, line_no, 0, G)) {
+						if (gmtsupport_place_label (GMT, new_label, this_label, G, !(G->label_type == GMT_LABEL_IS_NONE), 0)) goto fail;
+						gmtsupport_contlabel_angle (GMT, xx, yy, left, right, cangle, nn, contour, new_label, G);
+						if (gmtsupport_store_label (GMT, G, new_label, &n_alloc)) goto fail;
+						new_label = NULL;
 					}
 					else	/* All in vain... */
 						gmt_M_free (GMT, new_label);
@@ -3363,6 +3498,7 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 				}
 				if (min_dist < G->slop) {	/* Closest point within tolerance */
 					new_label = gmt_M_memory (GMT, NULL, 1, struct GMT_LABEL);
+					if (!new_label) goto fail;
 					new_label->x = xx[start];
 					new_label->y = yy[start];
 					new_label->node = start;
@@ -3371,15 +3507,10 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 					new_label->dist = map_dist[start];
 					this_value_dist = value_dist[start];
 					if (gmtsupport_label_is_OK (GMT, new_label, this_label, label, this_dist, this_value_dist, 0, j, G)) {
-						gmtsupport_place_label (GMT, new_label, this_label, G, !(G->label_type == GMT_LABEL_IS_NONE), 0);
+						if (gmtsupport_place_label (GMT, new_label, this_label, G, !(G->label_type == GMT_LABEL_IS_NONE), 0)) goto fail;
 						gmtsupport_contlabel_angle (GMT, xx, yy, start, start, cangle, nn, contour, new_label, G);
-						G->L[G->n_label++] = new_label;
-						if (G->n_label == n_alloc) {
-							size_t old_n_alloc = n_alloc;
-							n_alloc <<= 1;
-							if ((G->L = gmt_M_memory (GMT, G->L, n_alloc, struct GMT_LABEL *)) == NULL) return;
-							gmt_M_memset (&(G->L[old_n_alloc]), n_alloc - old_n_alloc, struct GMT_LABEL *);	/* Set to NULL */
-						}
+						if (gmtsupport_store_label (GMT, G, new_label, &n_alloc)) goto fail;
+						new_label = NULL;
 					}
 					else	/* All in vain... */
 						gmt_M_free (GMT, new_label);
@@ -3388,9 +3519,10 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 
 			if (G->n_label == 0) GMT_Report (GMT->parent, GMT_MSG_INFORMATION, "Your -Gf option produced no contour labels for z = %g\n", zval);
 		}
-		gmtsupport_contlabel_fixpath (GMT, &xx, &yy, map_dist, &nn, G);	/* Inserts the label x,y into path */
-		gmtsupport_contlabel_addpath (GMT, xx, yy, nn, zval, label, true, G);		/* Appends this path and the labels to list */
-
+		gmtsupport_free_projected_distance (GMT, &sampled);
+		if (gmtsupport_contlabel_fixpath (GMT, &xx, &yy, map_dist, &nn, G)) goto fail;
+		*xxx = xx;	*yyy = yy;	/* fixpath may have replaced the caller's arrays */
+		if (gmtsupport_contlabel_addpath (GMT, xx, yy, nn, zval, label, true, G)) goto fail;
 		gmt_M_free (GMT, track_dist);
 		gmt_M_free (GMT, map_dist);
 		gmt_M_free (GMT, value_dist);
@@ -3402,10 +3534,66 @@ GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, 
 		gmt_M_free (GMT, G->L);
 	}
 	else {   /* just one line, no holes for labels */
-		gmtsupport_contlabel_addpath (GMT, xx, yy, nn, zval, label, false, G);		/* Appends this path to list */
+		if (gmtsupport_contlabel_addpath (GMT, xx, yy, nn, zval, label, false, G)) goto fail;
 	}
 	*xxx = xx;
 	*yyy = yy;
+	return GMT_NOERROR;
+fail:
+	gmtsupport_free_projected_distance (GMT, &sampled);
+	gmt_M_free (GMT, radii);
+	gmt_M_free (GMT, track_dist);
+	gmt_M_free (GMT, map_dist);
+	gmt_M_free (GMT, value_dist);
+	if (new_label) {
+		gmt_M_free (GMT, new_label->label);
+		gmt_M_free (GMT, new_label);
+	}
+	for (i = 0; i < (uint64_t)G->n_label; i++) {
+		gmt_M_free (GMT, G->L[i]->label);
+		gmt_M_free (GMT, G->L[i]);
+	}
+	gmt_M_free (GMT, G->L);
+	G->n_label = 0;
+	gmt_M_free (GMT, G->ylist_XP);
+	gmt_M_free (GMT, G->ylist);
+	gmt_x_free (GMT, &G->XC);
+	return GMT_MEMORY_ERROR;
+}
+
+GMT_LOCAL void gmtsupport_hold_contour_sub (struct GMT_CTRL *GMT, double **xxx, double **yyy, uint64_t nn, double zval, char *label, char ctype, double cangle, bool closed, bool contour, struct GMT_CONTOUR *G) {
+	(void)gmtsupport_hold_contour_impl (GMT, NULL, xxx, yyy, nn, zval, label, ctype, cangle, closed, contour, G, false);
+}
+
+/*! Hold a contour whose line segments were constructed in the projected plane. */
+int gmt_hold_contour_projected (struct GMT_CTRL *GMT, struct GMT_CTRL *distance_GMT, double **xxx, double **yyy, uint64_t nn, double zval, char *label, char ctype, double cangle, bool closed, bool contour, struct GMT_CONTOUR *G) {
+	if (!distance_GMT && (G->dist_kind == 1 || G->label_type == GMT_LABEL_IS_MDIST)) return GMT_RUNTIME_ERROR;
+	if (distance_GMT) {
+		/* Preserve the model chosen for pscontour before map setup can force a
+		 * spherical plotting projection.  The distance context retains that
+		 * ellipsoid and the requested geodesic implementation. */
+		unsigned int id, mode = gmt_M_sph_mode (distance_GMT);
+		for (id = GMT_CONT_DIST; id <= GMT_LABEL_DIST; id++) {
+			bool needed = (id == GMT_CONT_DIST) ? G->dist_kind == 1 : G->label_type == GMT_LABEL_IS_MDIST;
+			if (needed) {
+				double scale = GMT->current.map.dist[id].scale;
+				bool arc = GMT->current.map.dist[id].arc;
+				if (id == GMT_LABEL_DIST && G->dist_unit == 0) {
+					if (G->spacing && G->dist_kind == 1) {
+						arc = GMT->current.map.dist[GMT_CONT_DIST].arc;
+						scale = GMT->current.map.dist[GMT_CONT_DIST].scale;
+					}
+					else {	/* +LD defaults to degrees without map-distance spacing. */
+						arc = true;
+						scale = 1.0;
+					}
+				}
+				if (gmt_init_distaz (distance_GMT, arc ? 'd' : 'k', mode, id) == GMT_NOT_A_VALID_TYPE) return GMT_NOT_A_VALID_TYPE;
+				distance_GMT->current.map.dist[id].scale = scale;
+			}
+		}
+	}
+	return gmtsupport_hold_contour_impl (GMT, distance_GMT, xxx, yyy, nn, zval, label, ctype, cangle, closed, contour, G, true);
 }
 
 /*! . */

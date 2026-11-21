@@ -29,6 +29,7 @@
  */
 
 #include "gmt_dev.h"
+#include "gmt_internals.h"
 #include "longopt/pscontour_inc.h"
 
 #define THIS_MODULE_CLASSIC_NAME	"pscontour"
@@ -678,7 +679,7 @@ static int parse (struct GMT_CTRL *GMT, struct PSCONTOUR_CTRL *Ctrl, struct GMT_
 }
 
 #define bailout(code) {gmt_M_free_options (mode); return (code);}
-#define Return(code) {Free_Ctrl (GMT, Ctrl); gmt_end_module (GMT, GMT_cpy); bailout (code);}
+#define Return(code) {if (distance_GMT) gmt_M_free (GMT, distance_GMT); Free_Ctrl (GMT, Ctrl); gmt_end_module (GMT, GMT_cpy); bailout (code);}
 
 EXTERN_MSC int GMT_pscontour (void *V_API, int mode, void *args) {
 	int add, error = 0;
@@ -712,7 +713,7 @@ EXTERN_MSC int GMT_pscontour (void *V_API, int mode, void *args) {
 	struct GMT_RECORD *In = NULL;
 	struct PSCONTOUR_SAVE *save = NULL;
 	struct PSCONTOUR_CTRL *Ctrl = NULL;
-	struct GMT_CTRL *GMT = NULL, *GMT_cpy = NULL;		/* General GMT internal parameters */
+	struct GMT_CTRL *GMT = NULL, *GMT_cpy = NULL, *distance_GMT = NULL;	/* General GMT internal parameters */
 	struct GMT_OPTION *options = NULL, *opt = NULL;
 	struct PSL_CTRL *PSL = NULL;		/* General PSL internal parameters */
 	struct GMTAPI_CTRL *API = gmt_get_api_ptr (V_API);	/* Cast from void to GMTAPI_CTRL pointer */
@@ -741,6 +742,13 @@ EXTERN_MSC int GMT_pscontour (void *V_API, int mode, void *args) {
 
 	/*---------------------------- This is the pscontour main code ----------------------------*/
 
+	make_plot = !Ctrl->D.active;	/* Turn off plotting if -D was used */
+	/* Reserve the distance context before registering or opening any input.
+	 * Snapshot it later, after GMT has selected the input's coordinate types. */
+	if (make_plot && (Ctrl->contour.dist_kind == 1 || Ctrl->contour.label_type == GMT_LABEL_IS_MDIST)) {
+		if ((distance_GMT = gmt_M_memory (GMT, NULL, 1, struct GMT_CTRL)) == NULL) Return (GMT_MEMORY_ERROR);
+	}
+
 	GMT_Report (API, GMT_MSG_INFORMATION, "Processing input table data\n");
 	if (Ctrl->D.active) {
 		GMT_Report (API, GMT_MSG_INFORMATION, "With -D, no plotting will take place\n");
@@ -768,10 +776,15 @@ EXTERN_MSC int GMT_pscontour (void *V_API, int mode, void *args) {
 			GMT_Report (API, GMT_MSG_ERROR, "Categorical data (as implied by CPT) do not have contours.  Check plot.\n");
 		}
 	}
-	make_plot = !Ctrl->D.active;	/* Turn off plotting if -D was used */
 	convert = (make_plot || (GMT->common.R.active[RSET] && GMT->common.J.active));
 	get_contours = (Ctrl->D.active || Ctrl->W.active);
 
+	/* Preserve the selected input and ellipsoid state at the original point,
+	 * before map setup can replace the ellipsoid with a sphere. */
+	if (distance_GMT) {
+		gmt_M_memcpy (distance_GMT, GMT, 1, struct GMT_CTRL);
+		gmtlib_init_ellipsoid (distance_GMT);
+	}
 	if (GMT->common.J.active && gmt_map_setup (GMT, GMT->common.R.wesn)) Return (GMT_PROJECTION_ERROR);
 
 	n_alloc = GMT_INITIAL_MEM_ROW_ALLOC;
@@ -1534,7 +1547,43 @@ EXTERN_MSC int GMT_pscontour (void *V_API, int mode, void *args) {
 						save[n_save].cval = cont[c].val;
 						n_save++;
 					}
-					gmt_hold_contour (GMT, &xp, &yp, m, cont[c].val, cont_label, cont[c].type, cont[c].angle, is_closed, true, &Ctrl->contour);
+					/* Triangles and their contours were formed after projection, so every
+					 * segment is continuous in the plot plane. */
+					if ((error = gmt_hold_contour_projected (GMT, distance_GMT, &xp, &yp, m, cont[c].val, cont_label, cont[c].type, cont[c].angle, is_closed, true, &Ctrl->contour)) != GMT_NOERROR) {
+						size_t kk;
+						bool keep_open = GMT->common.K.active;
+						/* The current chain was consumed above; release the remaining
+						 * chains and all state owned by this plotting attempt. */
+						while (this_c) {
+							p = this_c->begin;
+							while (p) { q = p->next; gmt_M_free (GMT, p); p = q; }
+							last_c = this_c;	this_c = this_c->next;
+							gmt_M_free (GMT, last_c);
+						}
+						gmt_M_free (GMT, head_c);
+						gmt_M_free (GMT, xp);		gmt_M_free (GMT, yp);
+						for (kk = 0; kk < n_save; kk++) { gmt_M_free (GMT, save[kk].x); gmt_M_free (GMT, save[kk].y); }
+						gmt_M_free (GMT, save);
+						gmt_contlabel_free (GMT, &Ctrl->contour);
+						for (kk = 0; kk < n_contours; kk++) gmt_M_free (GMT, line[kk].L);
+						gmt_M_free (GMT, line);
+						gmt_M_free (GMT, cont);
+						gmt_M_free (GMT, x);		gmt_M_free (GMT, y);		gmt_M_free (GMT, z);
+						if (Ctrl->E.active) gmt_M_free (GMT, ind);
+						else gmt_delaunay_free (GMT, &ind);
+						/* This layer has not installed its delayed label clip yet.
+						 * Undo only the map clip created above, and do not count a
+						 * persistent clip for the aborted plot. */
+						if (!Ctrl->N.active) gmt_map_clip_off (GMT);
+						GMT->current.ps.nclip = 0;
+						gmt_plane_perspective (GMT, -1, 0.0);
+						/* In classic mode an absent -K would end the page and clear
+						 * clip_level; keep a caller's existing clip available. */
+						if (GMT->current.ps.clip_level > 0) GMT->common.K.active = true;
+						gmt_plotend (GMT);
+						GMT->common.K.active = keep_open;
+						Return (error);
+					}
 					n_cont_attempts++;
 
 				}
